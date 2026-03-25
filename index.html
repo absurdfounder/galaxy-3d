@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Galaxy Visualization</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+
+    #ui {
+      position: fixed;
+      top: 18px;
+      left: 18px;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #ui h3 {
+      color: rgba(255,255,255,0.55);
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.18);
+      color: rgba(255,255,255,0.75);
+      padding: 6px 14px;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 12px;
+      letter-spacing: 0.5px;
+      transition: all 0.2s ease;
+      backdrop-filter: blur(6px);
+    }
+
+    .btn:hover {
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      border-color: rgba(255,255,255,0.4);
+    }
+
+    .btn.active {
+      background: rgba(68, 136, 255, 0.3);
+      border-color: rgba(68, 136, 255, 0.8);
+      color: #aaddff;
+    }
+
+    #info {
+      position: fixed;
+      bottom: 18px;
+      right: 18px;
+      color: rgba(255,255,255,0.25);
+      font-size: 11px;
+      letter-spacing: 0.3px;
+      text-align: right;
+      line-height: 1.6;
+      pointer-events: none;
+    }
+
+    #particle-count {
+      position: fixed;
+      bottom: 18px;
+      left: 18px;
+      color: rgba(255,255,255,0.25);
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      pointer-events: none;
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+  <div id="ui">
+    <h3>Galaxy Type</h3>
+    <div class="btn-group">
+      <button class="btn active" id="btn-spiral" onclick="setGalaxyType('spiral')">Spiral</button>
+      <button class="btn" id="btn-elliptical" onclick="setGalaxyType('elliptical')">Elliptical</button>
+      <button class="btn" id="btn-irregular" onclick="setGalaxyType('irregular')">Irregular</button>
+    </div>
+  </div>
+
+  <div id="info">
+    Drag to rotate · Scroll to zoom · Right-drag to pan
+  </div>
+
+  <div id="particle-count"></div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+    // ─── Scene Setup ────────────────────────────────────────────────────────────
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+
+    const camera = new THREE.PerspectiveCamera(
+      60,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      10000
+    );
+    camera.position.set(0, 80, 180);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.9;
+    document.body.appendChild(renderer.domElement);
+
+    // ─── OrbitControls ──────────────────────────────────────────────────────────
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.minDistance = 20;
+    controls.maxDistance = 900;
+    controls.autoRotate = false;
+
+    // ─── Post-processing: Bloom ──────────────────────────────────────────────────
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      1.5,   // strength
+      0.4,   // radius
+      0.1    // threshold
+    );
+    composer.addPass(bloomPass);
+
+    const outputPass = new OutputPass();
+    composer.addPass(outputPass);
+
+    // ─── Particle Texture (soft circular sprite) ─────────────────────────────────
+    function makeParticleTexture() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      const grad = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0.0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.3, 'rgba(255,255,255,0.8)');
+      grad.addColorStop(0.7, 'rgba(255,255,255,0.15)');
+      grad.addColorStop(1.0, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 64, 64);
+      return new THREE.CanvasTexture(canvas);
+    }
+    const particleTexture = makeParticleTexture();
+
+    // ─── Color helpers ──────────────────────────────────────────────────────────
+    // Core: warm white/yellow  →  Outer: cool blue
+    function galaxyColor(t) {
+      // t = 0 (core) → 1 (outer)
+      const coreColors = [
+        new THREE.Color('#fff7d6'),
+        new THREE.Color('#ffe066'),
+        new THREE.Color('#ffcc44'),
+      ];
+      const outerColors = [
+        new THREE.Color('#4488ff'),
+        new THREE.Color('#aaddff'),
+        new THREE.Color('#88bbff'),
+      ];
+      const ci = Math.floor(Math.random() * coreColors.length);
+      const oi = Math.floor(Math.random() * outerColors.length);
+      const c = new THREE.Color();
+      c.lerpColors(coreColors[ci], outerColors[oi], Math.pow(t, 0.7));
+      return c;
+    }
+
+    // ─── Galaxy Generators ───────────────────────────────────────────────────────
+    const PARTICLE_COUNT = 55000;
+
+    function generateSpiral() {
+      const positions = new Float32Array(PARTICLE_COUNT * 3);
+      const colors    = new Float32Array(PARTICLE_COUNT * 3);
+
+      const arms = 2;
+      const armSpread = 0.38;        // angular spread around arm axis
+      const maxRadius = 120;
+      const coreRadius = 12;
+      const tightness = 3.5;         // controls how tightly wound the arms are
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const idx = i * 3;
+
+        // Distribution: bias towards interesting arm region
+        const rand = Math.random();
+        let r, theta, t;
+
+        if (rand < 0.12) {
+          // Dense bright core (bulge)
+          r = Math.pow(Math.random(), 1.5) * coreRadius;
+          theta = Math.random() * Math.PI * 2;
+          t = 0;
+        } else {
+          // Spiral arms
+          const arm = Math.floor(Math.random() * arms);
+          const armAngle = (arm / arms) * Math.PI * 2;
+
+          // Logarithmic spiral: r increases with theta
+          r = Math.pow(Math.random(), 0.55) * maxRadius;
+          const logAngle = Math.log(r / coreRadius + 1) * tightness;
+          theta = armAngle + logAngle + (Math.random() - 0.5) * armSpread * (1 + r / maxRadius);
+
+          // Some halo/scatter particles
+          if (Math.random() < 0.08) {
+            r = Math.random() * maxRadius * 1.1;
+            theta = Math.random() * Math.PI * 2;
+          }
+
+          t = Math.min(r / maxRadius, 1);
+        }
+
+        // Thin disk with slight vertical puff
+        const diskY = (Math.random() - 0.5) * 2.5 * (1 + r / maxRadius * 0.3);
+        const coreY = t < 0.15 ? (Math.random() - 0.5) * 14 : diskY;
+
+        positions[idx]     = Math.cos(theta) * r;
+        positions[idx + 1] = coreY;
+        positions[idx + 2] = Math.sin(theta) * r;
+
+        const col = galaxyColor(t);
+        colors[idx]     = col.r;
+        colors[idx + 1] = col.g;
+        colors[idx + 2] = col.b;
+      }
+
+      return { positions, colors };
+    }
+
+    function generateElliptical() {
+      const positions = new Float32Array(PARTICLE_COUNT * 3);
+      const colors    = new Float32Array(PARTICLE_COUNT * 3);
+
+      const a = 100, b = 70, c = 55; // semi-axes
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const idx = i * 3;
+
+        // Sample in ellipsoid with density falloff from center
+        const r = Math.pow(Math.random(), 0.7);
+        const theta = Math.random() * Math.PI * 2;
+        const phi   = Math.acos(2 * Math.random() - 1);
+
+        const x = a * r * Math.sin(phi) * Math.cos(theta);
+        const y = c * r * Math.cos(phi);
+        const z = b * r * Math.sin(phi) * Math.sin(theta);
+
+        positions[idx]     = x;
+        positions[idx + 1] = y;
+        positions[idx + 2] = z;
+
+        // Ellipticals are old stars → red/orange/yellow-white
+        const t = r;
+        const warm = new THREE.Color().lerpColors(
+          new THREE.Color('#fff5e0'),
+          new THREE.Color('#ffaa44'),
+          Math.random() * 0.5 + t * 0.4
+        );
+        colors[idx]     = warm.r;
+        colors[idx + 1] = warm.g;
+        colors[idx + 2] = warm.b;
+      }
+
+      return { positions, colors };
+    }
+
+    function generateIrregular() {
+      const positions = new Float32Array(PARTICLE_COUNT * 3);
+      const colors    = new Float32Array(PARTICLE_COUNT * 3);
+
+      // Multiple star-forming clumps + scatter
+      const clumps = [
+        { cx: 0,   cy: 0,  cz: 0,   r: 40, weight: 0.25 },
+        { cx: 50,  cy: 10, cz: 30,  r: 30, weight: 0.20 },
+        { cx:-45,  cy:-5,  cz:-20,  r: 25, weight: 0.15 },
+        { cx: 20,  cy: 15, cz:-55,  r: 28, weight: 0.15 },
+        { cx:-30,  cy: 5,  cz: 60,  r: 22, weight: 0.15 },
+        { cx: 70,  cy:-10, cz:-10,  r: 18, weight: 0.10 },
+      ];
+
+      const totalW = clumps.reduce((s, c) => s + c.weight, 0);
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const idx = i * 3;
+
+        let cx = 0, cy = 0, cz = 0, cr = 80;
+        const rv = Math.random() * totalW;
+        let acc = 0;
+        for (const clump of clumps) {
+          acc += clump.weight;
+          if (rv <= acc) {
+            cx = clump.cx; cy = clump.cy; cz = clump.cz; cr = clump.r;
+            break;
+          }
+        }
+
+        const r3 = Math.pow(Math.random(), 0.6) * cr;
+        const theta = Math.random() * Math.PI * 2;
+        const phi   = Math.acos(2 * Math.random() - 1);
+
+        positions[idx]     = cx + r3 * Math.sin(phi) * Math.cos(theta);
+        positions[idx + 1] = cy + r3 * Math.cos(phi) * 0.4;
+        positions[idx + 2] = cz + r3 * Math.sin(phi) * Math.sin(theta);
+
+        // Irregular = active star formation → mix of blue hot stars + yellow/white
+        const young = Math.random() < 0.55;
+        const col = young
+          ? new THREE.Color().lerpColors(new THREE.Color('#88ccff'), new THREE.Color('#4466ff'), Math.random())
+          : new THREE.Color().lerpColors(new THREE.Color('#fff7d6'), new THREE.Color('#ffdd77'), Math.random());
+        colors[idx]     = col.r;
+        colors[idx + 1] = col.g;
+        colors[idx + 2] = col.b;
+      }
+
+      return { positions, colors };
+    }
+
+    // ─── Build / Rebuild Points ──────────────────────────────────────────────────
+    let galaxyPoints = null;
+    let currentType  = 'spiral';
+
+    function buildGalaxy(type) {
+      // Remove old
+      if (galaxyPoints) {
+        galaxyPoints.geometry.dispose();
+        galaxyPoints.material.dispose();
+        scene.remove(galaxyPoints);
+        galaxyPoints = null;
+      }
+
+      let data;
+      if (type === 'spiral')     data = generateSpiral();
+      else if (type === 'elliptical') data = generateElliptical();
+      else                           data = generateIrregular();
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
+      geo.setAttribute('color',    new THREE.BufferAttribute(data.colors,    3));
+
+      const mat = new THREE.PointsMaterial({
+        size: 0.55,
+        sizeAttenuation: true,
+        vertexColors: true,
+        map: particleTexture,
+        alphaMap: particleTexture,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+
+      galaxyPoints = new THREE.Points(geo, mat);
+      scene.add(galaxyPoints);
+
+      document.getElementById('particle-count').textContent =
+        `${PARTICLE_COUNT.toLocaleString()} particles · ${type}`;
+    }
+
+    buildGalaxy('spiral');
+
+    // ─── Global toggle (exposed for HTML buttons) ────────────────────────────────
+    window.setGalaxyType = function(type) {
+      if (type === currentType) return;
+      currentType = type;
+
+      document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+      document.getElementById(`btn-${type}`).classList.add('active');
+
+      buildGalaxy(type);
+    };
+
+    // ─── Resize Handler ──────────────────────────────────────────────────────────
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      composer.setSize(window.innerWidth, window.innerHeight);
+      bloomPass.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ─── Animation Loop ──────────────────────────────────────────────────────────
+    const clock = new THREE.Clock();
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const delta = clock.getDelta();
+
+      // Subtle continuous Y-axis rotation
+      if (galaxyPoints) {
+        galaxyPoints.rotation.y += 0.0003;
+      }
+
+      controls.update();
+      composer.render();
+    }
+
+    animate();
+  </script>
+</body>
+</html>
